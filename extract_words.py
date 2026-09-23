@@ -35,6 +35,11 @@ def normalize_definition(definition: str) -> str:
     return " ".join(definition.split())
 
 
+def normalize_word(word: str) -> str:
+    """Normalize a query without changing the spelling returned in output."""
+    return " ".join(word.split()).casefold()
+
+
 def extract_words(rows: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Group definition rows by word and yield one record per word."""
     grouped: OrderedDict[str, list[str]] = OrderedDict()
@@ -105,7 +110,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Extrae palabras y significados del Synthetic DEM."
     )
-    parser.add_argument("--output", "-o", type=Path, default=Path("words.jsonl"))
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="Archivo de salida. En modo consulta, por defecto se usa stdout.",
+    )
+    parser.add_argument(
+        "--word",
+        "-w",
+        help="Consultar una palabra concreta y devolver todos sus significados.",
+    )
     parser.add_argument(
         "--format",
         choices=("jsonl", "csv"),
@@ -136,16 +151,30 @@ def main() -> int:
             record
             for record in extract_words(rows)
             if record["meaning_count"] >= args.min_meanings
+            and (
+                args.word is None
+                or normalize_word(record["word"]) == normalize_word(args.word)
+            )
         )
+        if args.word is not None and args.output is None:
+            matches = list(records)
+            if not matches:
+                print(f"No se encontró la palabra: {args.word}", file=sys.stderr)
+                return 1
+            for record in matches:
+                print(json.dumps(record, ensure_ascii=False))
+            return 0
+
+        output = args.output or Path("words.jsonl")
         if args.format == "jsonl":
-            count = write_json(records, args.output)
+            count = write_json(records, output)
         else:
-            count = write_csv(records, args.output)
+            count = write_csv(records, output)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
 
-    print(f"Se escribieron {count} palabras en {args.output}")
+    print(f"Se escribieron {count} palabras en {output}")
     return 0
 
 

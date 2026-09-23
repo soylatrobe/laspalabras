@@ -14,6 +14,10 @@ python -m pip install -r requirements.txt
 # Todas las palabras, en JSON Lines
 python extract_words.py --output words.jsonl
 
+# Consultar una palabra; devuelve todos sus significados por stdout
+python extract_words.py --word "ah"
+python extract_words.py --word "banco"
+
 # Solo palabras con dos o más significados
 python extract_words.py --min-meanings 2 --output palabras_polisemicas.jsonl
 
@@ -25,4 +29,11 @@ Cada línea JSON tiene esta forma:
 
 ```json
 {"word": "¡ah!", "meanings": ["Manifiesta asombro, sorpresa o adoración", "Confirma con asombro alguna cosa"], "meaning_count": 2}
+```
+
+La consulta no distingue mayúsculas y minúsculas. Para guardar el resultado
+en lugar de mostrarlo en pantalla, usa `--output`:
+
+```bash
+python extract_words.py --word "banco" --output banco.jsonl
 ```
