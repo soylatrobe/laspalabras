@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import re
+import sqlite3
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any, Iterable, Iterator
 
 DATASET_ID = "projecte-aina/synthetic_dem"
 DEFAULT_SPLIT = "definiciones"
+DEFAULT_CACHE = Path(".cache/synthetic_dem.sqlite")
 FILENAME_RE = re.compile(r"^[^_]+_(.+)$")
 
 
@@ -75,6 +77,77 @@ def load_rows(dataset_id: str, split: str) -> Iterable[dict[str, Any]]:
     # Selecting columns before iteration prevents the datasets library from
     # decoding the audio feature (which is not needed for this extraction).
     return dataset.select_columns(["filename", "text"])
+
+
+def build_cache(rows: Iterable[dict[str, Any]], cache_path: Path) -> None:
+    """Build a local word index once so later lookups do not scan the dataset."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(cache_path) as connection:
+        connection.executescript(
+            """
+            DROP TABLE IF EXISTS meanings;
+            CREATE TABLE meanings (
+                word_key TEXT NOT NULL,
+                word TEXT NOT NULL,
+                meaning TEXT NOT NULL,
+                PRIMARY KEY (word_key, meaning)
+            );
+            DROP TABLE IF EXISTS metadata;
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            """
+        )
+        for row in rows:
+            word = word_from_filename(str(row["filename"]))
+            meaning = normalize_definition(str(row["text"]))
+            if meaning:
+                connection.execute(
+                    "INSERT OR IGNORE INTO meanings VALUES (?, ?, ?)",
+                    (normalize_word(word), word, meaning),
+                )
+        connection.execute(
+            "INSERT INTO metadata VALUES ('complete', '1')"
+        )
+
+
+def query_cache(
+    cache_path: Path, query: str, minimum_meanings: int
+) -> list[dict[str, Any]]:
+    """Read one word and all its distinct meanings from the local index."""
+    with sqlite3.connect(cache_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT word, meaning
+            FROM meanings
+            WHERE word_key = ?
+            ORDER BY rowid
+            """,
+            (normalize_word(query),),
+        ).fetchall()
+
+    if not rows:
+        return []
+    meanings = [meaning for _, meaning in rows]
+    if len(meanings) < minimum_meanings:
+        return []
+    return [
+        {
+            "word": rows[0][0],
+            "meanings": meanings,
+            "meaning_count": len(meanings),
+        }
+    ]
+
+
+def cache_is_ready(cache_path: Path) -> bool:
+    if not cache_path.exists():
+        return False
+    try:
+        with sqlite3.connect(cache_path) as connection:
+            return connection.execute(
+                "SELECT value FROM metadata WHERE key = 'complete'"
+            ).fetchone() == ("1",)
+    except sqlite3.DatabaseError:
+        return False
 
 
 def write_json(records: Iterable[dict[str, Any]], output: Path) -> int:
@@ -134,6 +207,17 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Conservar palabras con al menos N significados (por defecto: 1).",
     )
+    parser.add_argument(
+        "--cache",
+        type=Path,
+        default=DEFAULT_CACHE,
+        help="Índice local para acelerar consultas (por defecto: .cache/synthetic_dem.sqlite).",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="No usar ni crear el índice local.",
+    )
     parser.add_argument("--dataset", default=DATASET_ID, help=argparse.SUPPRESS)
     parser.add_argument("--split", default=DEFAULT_SPLIT, help=argparse.SUPPRESS)
     return parser.parse_args()
@@ -146,24 +230,33 @@ def main() -> int:
         return 2
 
     try:
-        rows = load_rows(args.dataset, args.split)
-        records = (
-            record
-            for record in extract_words(rows)
-            if record["meaning_count"] >= args.min_meanings
-            and (
-                args.word is None
-                or normalize_word(record["word"]) == normalize_word(args.word)
+        if args.word is not None and not args.no_cache:
+            if not cache_is_ready(args.cache):
+                print(
+                    "Construyendo el índice local; solo ocurre una vez...",
+                    file=sys.stderr,
+                )
+                build_cache(load_rows(args.dataset, args.split), args.cache)
+            matches = query_cache(args.cache, args.word, args.min_meanings)
+            if args.output is None:
+                if not matches:
+                    print(f"No se encontró la palabra: {args.word}", file=sys.stderr)
+                    return 1
+                for record in matches:
+                    print(json.dumps(record, ensure_ascii=False))
+                return 0
+            records = iter(matches)
+        else:
+            rows = load_rows(args.dataset, args.split)
+            records = (
+                record
+                for record in extract_words(rows)
+                if record["meaning_count"] >= args.min_meanings
+                and (
+                    args.word is None
+                    or normalize_word(record["word"]) == normalize_word(args.word)
+                )
             )
-        )
-        if args.word is not None and args.output is None:
-            matches = list(records)
-            if not matches:
-                print(f"No se encontró la palabra: {args.word}", file=sys.stderr)
-                return 1
-            for record in matches:
-                print(json.dumps(record, ensure_ascii=False))
-            return 0
 
         output = args.output or Path("words.jsonl")
         if args.format == "jsonl":
