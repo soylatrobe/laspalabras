@@ -40,6 +40,23 @@ Consulta una palabra con `--word`:
 python extract_words.py --word "banco"
 ```
 
+La primera consulta construye un índice SQLite local en
+`.cache/synthetic_dem.sqlite` y puede tardar varios minutos. Después, las
+consultas usan ese índice y normalmente responden en menos de un segundo:
+
+```bash
+python extract_words.py --word "cuele"
+python extract_words.py --word "banco"
+```
+
+Puedes elegir otra ubicación para el índice con `--cache`. Usa `--no-cache`
+solo si necesitas forzar el recorrido directo del dataset:
+
+```bash
+python extract_words.py --word "banco" --cache /tmp/synthetic_dem.sqlite
+python extract_words.py --word "banco" --no-cache
+```
+
 La respuesta se imprime como un objeto JSON con todos los significados:
 
 ```json
